@@ -1,5 +1,8 @@
 #ifdef USE_OPENCV
 #include <opencv2/core/core.hpp>
+#include <opencv2/core/mat.hpp>
+#include <opencv2/highgui/highgui.hpp>
+#include <opencv2/imgproc/imgproc.hpp>
 #endif  // USE_OPENCV
 
 #include <string>
@@ -226,6 +229,10 @@ template<typename Dtype>
 void DataTransformer<Dtype>::Transform(const cv::Mat& cv_img,
                                        Blob<Dtype>* transformed_blob) {
   const int crop_size = param_.crop_size();
+  const bool contrast_adjustment = param_.contrast_adjustment();
+  const bool smooth_filtering = param_.smooth_filtering();
+  const bool flipping = param_.flipping();
+
   const int img_channels = cv_img.channels();
   const int img_height = cv_img.rows;
   const int img_width = cv_img.cols;
@@ -270,6 +277,47 @@ void DataTransformer<Dtype>::Transform(const cv::Mat& cv_img,
     }
   }
 
+  // Flipping and Reflection
+  int flipping_mode = (Rand(4)) - 1; // -1, 0, 1, 2
+  if (flipping && flipping_mode != 2) {
+    cv::flip(cv_img, cv_img, flipping_mode);
+  }
+
+  // Smooth Filtering
+  if (smooth_filtering && Rand(2)) {
+    int smooth_param1 = 3;
+    int smooth_type = Rand(4); // see opencv_util.hpp
+    smooth_param1 = 3 + 2*(Rand(1));
+    switch(smooth_type) {
+      case 0:
+        cv::GaussianBlur(cv_img, cv_img, cv::Size(smooth_param1, smooth_param1), 0);
+        break;
+      case 1:
+        cv::blur(cv_img, cv_img, cv::Size(smooth_param1, smooth_param1));
+        break;
+      case 2:
+        cv::medianBlur(cv_img, cv_img, smooth_param1);
+        break;
+      case 3:
+        cv::boxFilter(cv_img, cv_img, -1, cv::Size(smooth_param1*2, smooth_param1*2));
+        break;
+    }
+  }
+
+  // Contrast and Brightness Adjuestment
+  if (contrast_adjustment && Rand(2)) {
+    cv::RNG rng;
+    float alpha = 1, beta = 0;
+    float min_alpha = 0.8, max_alpha = 1.2;
+    alpha = rng.uniform(min_alpha, max_alpha);
+    beta = (float)(Rand(6));
+    // flip sign
+    if (Rand(2))
+        beta = -beta;
+    cv_img.convertTo(cv_img, -1 , alpha, beta);
+  }
+
+  // Cropping
   int h_off = 0;
   int w_off = 0;
   cv::Mat cv_cropped_img = cv_img;
@@ -292,6 +340,30 @@ void DataTransformer<Dtype>::Transform(const cv::Mat& cv_img,
   }
 
   CHECK(cv_cropped_img.data);
+  /*
+  // Rotation
+  double rotation_degree;
+  const float rotation_angle_interval = param_.rotation_angle_interval();
+  if (rotation_angle_interval > 1) {
+    cv::Mat dst;
+    int interval = 360 / rotation_angle_interval;
+    int apply_rotation = Rand(interval);
+
+    cv::Size dsize = cv::Size(cv_cropped_img.cols*1.5, cv_cropped_img.rows*1.5);
+    cv::Mat resize_img = cv::Mat(dsize, CV_32S);
+    cv::resize(cv_cropped_img, resize_img, dsize);
+
+    cv::Point2f pt(resize_img.cols/2., resize_img.rows/2.);
+    rotation_degree = apply_rotation * rotation_angle_interval;
+    cv::Mat r = getRotationMatrix2D(pt, rotation_degree, 1.0);
+    warpAffine(resize_img, dst, r, cv::Size(resize_img.cols, resize_img.rows));
+
+    cv::Rect myROI(resize_img.cols/6, resize_img.rows/6, cv_cropped_img.cols, cv_cropped_img.rows);
+    cv::Mat crop_after_rotate = dst(myROI);
+
+    crop_after_rotate.copyTo(cv_img);
+  }
+  */
 
   Dtype* transformed_data = transformed_blob->mutable_cpu_data();
   int top_index;
@@ -521,14 +593,8 @@ vector<int> DataTransformer<Dtype>::InferBlobShape(
 
 template <typename Dtype>
 void DataTransformer<Dtype>::InitRand() {
-  const bool needs_rand = param_.mirror() ||
-      (phase_ == TRAIN && param_.crop_size());
-  if (needs_rand) {
-    const unsigned int rng_seed = caffe_rng_rand();
-    rng_.reset(new Caffe::RNG(rng_seed));
-  } else {
-    rng_.reset();
-  }
+  const unsigned int rng_seed = caffe_rng_rand();
+  rng_.reset(new Caffe::RNG(rng_seed));
 }
 
 template <typename Dtype>
